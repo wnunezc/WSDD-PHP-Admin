@@ -126,6 +126,7 @@ if ($command === 'runtime:start') {
     $missing = [];
     $required = array_merge($required, ['src/Support/TypeGuard.php', 'src/Support/JsonCodec.php', 'src/Support/Process.php', 'src/Support/ExecutableFinder.php', 'src/Http/HttpErrorHandler.php']);
     $required = array_merge($required, ['src/Support/InstanceLock.php', 'src/Runtime/RuntimeStarter.php', 'public/runtime-health.php']);
+    $required[] = 'src/Profile/ProfileMetadataRecorder.php';
     foreach ($required as $relativePath) {
         if (!is_file($appRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relativePath))) {
             $missing[] = $relativePath;

@@ -44,7 +44,7 @@ function InvokeCli([string[]]$Arguments) {
 $detected = (InvokeCli @("$root/bin/wsdd-php-admin", 'detect')) | ConvertFrom-Json
 if (!$detected.php.version.StartsWith("$PhpVersion.")) { throw 'Detected runtime differs from requested target.' }
 foreach ($command in 'permissions','profile:status','reconcile') { InvokeCli @("$root/bin/wsdd-php-admin", $command) }
-foreach ($check in 'php-compatibility','profile-bootstrap','agent-safety','agent-response','security-hardening','runtime-observation','extension-catalog','reconciliation-failures','runtime-startup') {
+foreach ($check in 'php-compatibility','profile-bootstrap','profile-metadata','agent-safety','agent-response','security-hardening','runtime-observation','extension-catalog','reconciliation-failures','runtime-startup') {
     InvokeCli @("$root/bin/validate-$check")
 }
 

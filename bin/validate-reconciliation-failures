@@ -27,10 +27,10 @@ $reconciler = new ManagedReconciler($profiles, new ManagedIniRepository($config)
 $runtime = (new RuntimeDetector())->detect();
 try {
     $profiles->save(ProfileDocument::createEmpty($runtime)->withExtensionState('wsdd_review_missing', 'enabled', 'fixture'));
-    $hash = hash_file('sha256', $config->profilePath());
+    $desired = $profiles->load()->profile->extensions()['wsdd_review_missing']['desired_state'];
     $report = $reconciler->apply();
     check($report['status'] === 'failed' && $report['verification']['status'] === 'failed' && $report['applied'] === [], 'Unmet enabled requirement cannot report global success');
-    check(hash_file('sha256', $config->profilePath()) === $hash, 'Failed reconciliation preserves desired profile');
+    check($profiles->load()->profile->extensions()['wsdd_review_missing']['desired_state'] === $desired && $profiles->load()->profile->toArray()['last_reconciliation']['status'] === 'failed', 'Failed reconciliation preserves desired state and records failure metadata');
     $ini = $directory . '/ini/zz-review-wsdd_review_missing.ini';
     file_put_contents($ini, "extension=wsdd_review_missing.so\n");
     $report = $reconciler->apply();

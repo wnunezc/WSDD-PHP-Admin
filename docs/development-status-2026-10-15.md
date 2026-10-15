@@ -6,7 +6,7 @@ Actualizacion de fiabilidad del mismo dia: P1/P2 descritos abajo fueron corregid
 
 ## Dictamen
 
-El hito inicial de PHP 8.3 esta implementado y validado. El downgrade del codigo comun permite ejecutar la misma aplicacion en PHP 5.6, 7.2, 7.4 y 8.1-8.4. Las fases 1-5 mantienen su cierre historico limitado al alcance inicial Dev/hardening base. La fase 6 tiene hitos cerrados por entorno, pero NO esta cerrada globalmente: faltan objetivos, evidencia de reinstalacion y funcionalidades ya requeridas por el plan. No se declara el producto listo para distribucion o produccion.
+El hito inicial de PHP 8.3 esta implementado y validado. El downgrade del codigo comun permite ejecutar la misma aplicacion en PHP 5.6, 7.2, 7.4 y 8.1-8.4. Las fases 1-5 estan cerradas en el alcance inicial Dev/hardening base y no se reabren por ampliaciones. La fase 6 conserva pendientes de versiones/evidencia de validacion, no por ampliaciones diferidas a issues. No se declara el producto listo para distribucion o produccion.
 
 ## Reconstruccion general validada
 
@@ -53,18 +53,22 @@ Es un riesgo confirmado por lectura de codigo, no una carrera ejecutada en los c
 | UI, navegacion, runtime, permisos, cola y actualizacion | Implementados y probados; faltan filtros explicitos por estado en la vista Extensions |
 | Catalogo seguro y descubrimiento real | 21 recetas compartidas, variantes GD/ZIP antiguas; no 21 compilaciones certificadas |
 | Instalar/activar/desactivar/revertir | Ciclos managed probados segun informes; remove retira INI propio, no paquetes/binarios |
-| Perfil deseado y persistencia | Implementados; metadata ampliada incompleta |
-| Estado observado, metodo/version/dependencias, ultima reconciliacion persistidos | No se registran sistematicamente en profile.json; resultados parciales viven en operaciones/logs/catalogo |
-| Incompatibilidades entre extensiones y bloqueo preventivo | No hay reglas/motor implementados; la allowlist no equivale a detectar conflictos |
-| Configuracion obligatoria de extensiones | No existe formulario/modal ni flujo de validacion de parametros requeridos |
-| Fallback de instalacion | fallback_methods es metadata vacia; no existe motor de fallback ejecutable |
+| Perfil deseado y persistencia | Implementados; ampliacion aditiva de metadatos sin cambiar schema_version ni intencion |
+| Estado observado, metodo/version/dependencias, ultima reconciliacion persistidos | Implementados en operaciones/reconciliacion; desconocidos explicitos, historial separado de verdad actual. Pruebas aisladas 5.6/8.4 aprobadas; bateria funcional final pendiente |
+| Incompatibilidades entre extensiones y bloqueo preventivo | Decision posterior del usuario: tratar problemas detectados como issues; reglas preventivas solo con casos confirmados. No hay motor implementado ni certificacion de combinaciones |
+| Configuracion obligatoria de extensiones | Revision documental de las 21 recetas: no se identificaron parametros de usuario obligatorios para carga. No se agregan formularios ficticios; el flujo condicional para futuras necesidades verificadas sigue sin implementar |
+| Fallback de instalacion | Diferido por decision del usuario: se implementara/utilizara cuando un issue demuestre la necesidad y exista una alternativa segura verificable. fallback_methods sigue vacio; no hay motor ejecutable |
 | Autenticacion, CSRF, auditoria, snapshots/rollback INI | Base implementada y probada; no equivale a rollback binario ni hardening Release completo |
-| Modo seguro ampliado y ultimo estado funcional | Pendientes; no hay bloqueo persistente de combinaciones problematicas |
+| Modo seguro ampliado y ultimo estado funcional | Ampliaciones diferidas a issues por decision del usuario; no implementadas, no bloquean cierres del alcance actual |
 | Distribucion/instalacion Release sin bind Dev | No validada; /opt es contrato futuro, no paquete publicado probado |
 
-ProfileDocument::withExtensionState registra desired_state, managed_by, source y updated_at; conserva metadata previa pero no genera automaticamente toda la prevista. last_reconciliation se inicializa a null y no tiene actualizacion implementada. El ejemplo ampliado de profile-schema-v1.md es objetivo de esquema, no evidencia de campos completos.
+Actualizacion posterior: ProfileMetadataRecorder completa entradas existentes con observaciones CLI/Apache, version comprobada, evidencia de instalacion y dependencias de receta; actualiza last_reconciliation y last_operation sin sustituir la intencion. Las fechas/metodos historicos desconocidos y reglas de conflictos ausentes siguen null. Detalle y limites: [Metadatos del perfil](profile-metadata-2026-10-15.md). Esta ampliacion no cierra la bateria funcional pendiente ni los otros requisitos.
 
 ## Cierres y trabajo siguiente
+
+Orden acordado: primero terminar desarrollo pendiente y al final ejecutar las validaciones pendientes. Primer bloque implementado: metadatos del perfil. Decision posterior: incompatibilidades pasan a seguimiento por issues ante problemas detectados, sin motor especulativo. Se reviso configuracion de las 21 recetas y no se identificaron parametros de usuario obligatorios de carga; no se declara implementado el flujo condicional futuro. El fallback tambien queda diferido a una necesidad demostrada mediante issue, no es el siguiente desarrollo. Siguen recuperacion ampliada y filtros por estado; los limites de remocion binaria y Release siguen documentados. Evidencia y alcance: [Revision de configuracion e incompatibilidades](extension-configuration-review-2026-10-15.md). No se cierran fases adicionales por esta revision.
+
+Correccion de alcance por instruccion expresa del usuario: las ampliaciones no son necesidades obligatorias y se desarrollaran cuando un issue las justifique. Se retira la recomendacion de implementar recuperacion ampliada/modo seguro como siguiente bloque. Rollback, snapshots y verificaciones existentes conservan su cierre; no se duplican ni se reabren fases por funciones futuras. La referencia anterior a recuperacion ampliada como desarrollo pendiente queda sustituida por esta decision. Los filtros siguen siendo un requisito UI identificado, no un motivo para reabrir las fases 1-5. El trabajo de cierre se concentra en las validaciones pendientes del alcance acordado.
 
 - Se cierran persistencia, arranque automatico, observacion UI y continuidad observada del agente en los siete contenedores actuales.
 - Se cierran reinstalacion desde enabled y arranque automatico posterior al downgrade para PHP 5.6/7.2; se ratifican 7.4/8.1/8.3.
@@ -72,4 +76,4 @@ ProfileDocument::withExtensionState registra desired_state, managed_by, source y
 - Fase 6 global abierta: PHP 8.0/8.5 aun sin entorno/evidencia; PHP 5.6 sin bateria de dependencias completa tras el fallo historico Stretch; no se ha elegido ni validado imagen alternativa. La comprobacion posterior a recreacion no reintento pdo_pgsql ni APT: no acredita que ese fallo este resuelto ni que se haya reproducido en la nueva imagen.
 - Resultado fiable de reconciliacion y exclusion/readiness implementados y validados tambien en el PHP 5.6 reconstruido; ver `runtime-reliability-fixes-2026-10-15.md`. Siguen pendientes las obligaciones funcionales de la tabla, no esta comprobacion final. No se crean fases nuevas ni se trasladan estas tareas a WSDD.
 
-Los cierres historicos 1-5 son hitos acotados, no una afirmacion de que todos los criterios de aceptacion globales esten completos. En particular, incompatibilidades, configuracion requerida y recuperacion ampliada impiden declarar aceptacion total.
+Las fases 1-5 conservan su cierre en el alcance acordado. Incompatibilidades, fallback y recuperacion ampliada se gestionan por issues y no bloquean ese cierre. Los formularios condicionales sin un caso aplicable tampoco son una obligacion artificial. Esto no certifica Release ni sustituye evidencia de pruebas aun pendiente.

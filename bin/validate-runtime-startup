@@ -125,6 +125,7 @@ try {
     check($codes === [0, 2] && $winner !== null, 'Two genuinely simultaneous CLI starts produce exactly one verified runtime');
     privateCall($starter, 'stopOwnedChildren');
 
+    $hash = hash_file('sha256', $config->profilePath());
     $lock = new InstanceLock($config->persistentRoot() . '/runtime/startup.lock');
     $blocked = $runner->run([PHP_BINARY, $cli, 'runtime:start'], 5);
     $lock->release();

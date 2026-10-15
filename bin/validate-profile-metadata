@@ -1,0 +1,55 @@
+#!/usr/bin/env php
+<?php
+require dirname(__DIR__) . '/src/Support/bootstrap.php';
+
+use Wsdd\PhpAdmin\Profile\ProfileDocument;
+use Wsdd\PhpAdmin\Profile\ProfileRepository;
+use Wsdd\PhpAdmin\Profile\ProfileMetadataRecorder;
+use Wsdd\PhpAdmin\Extensions\ExtensionCatalog;
+use Wsdd\PhpAdmin\Extensions\CatalogEnvironment;
+use Wsdd\PhpAdmin\Support\AppConfig;
+
+function checkMetadata($condition, $message) {
+    if (!$condition) throw new RuntimeException($message);
+    echo 'PASS ' . $message . PHP_EOL;
+}
+
+$directory = sys_get_temp_dir() . '/wsdd-profile-metadata-' . bin2hex(random_bytes(6));
+$config = new AppConfig(['paths' => ['persistent_root' => $directory]]);
+$profiles = new ProfileRepository($config);
+$catalog = new ExtensionCatalog(new CatalogEnvironment('5.6.40', 'debian', [], ['extensions' => [], 'error' => null, 'source' => 'fixture']));
+$recorder = new ProfileMetadataRecorder($profiles, $catalog);
+try {
+    $profile = ProfileDocument::fromArray(['schema_version' => 1, 'php' => ['version' => '5.6.40'],
+        'custom' => 'preserved', 'extensions' => ['calendar' => ['desired_state' => 'enabled', 'custom' => 'extension'],
+            'bcmath' => ['desired_state' => 'removed']]]);
+    $profiles->save($profile);
+    $snapshot = ['version' => '5.6.40', 'observed_at' => '2026-10-15T12:00:00Z',
+        'extensions' => ['calendar' => true, 'bcmath' => false], 'extension_versions' => ['calendar' => 'fixture-version']];
+    $report = ['status' => 'success', 'verification' => ['status' => 'success', 'observed' => ['cli' => $snapshot, 'apache' => $snapshot]]];
+    $recorder->record($report, ['calendar' => ['method' => 'fixture-installer', 'packages' => []]], true);
+    $data = $profiles->load()->profile->toArray();
+    $calendar = $data['extensions']['calendar'];
+    checkMetadata($calendar['desired_state'] === 'enabled' && $data['extensions']['bcmath']['desired_state'] === 'removed', 'Desired states preserved');
+    checkMetadata($data['custom'] === 'preserved' && $calendar['custom'] === 'extension', 'Existing custom metadata preserved');
+    checkMetadata($calendar['observed_state'] === 'enabled' && $calendar['installed_version'] === 'fixture-version', 'Version comes from matching CLI and Apache evidence');
+    checkMetadata($calendar['install_method'] === 'fixture-installer' && $calendar['installed_at'] !== null, 'Only successful installation evidence provides method and date');
+    checkMetadata($calendar['system_dependencies'] === [] && $calendar['incompatible_with'] === null, 'Known recipe dependencies and unknown conflict rules remain distinct');
+    checkMetadata($data['extensions']['bcmath']['installed_at'] === null, 'Legacy profile installation date is not fabricated');
+    $before = $data['extensions']['bcmath'];
+    $report['status'] = 'failed';
+    $report['verification']['observed']['apache']['extensions']['calendar'] = false;
+    $recorder->record($report, [], false, 'calendar');
+    $data = $profiles->load()->profile->toArray();
+    checkMetadata($data['extensions']['calendar']['observed_state'] === 'inconsistent', 'CLI/Apache disagreement is explicit');
+    checkMetadata($data['extensions']['bcmath'] === $before, 'Single-extension operation leaves other metadata untouched');
+    checkMetadata($data['last_reconciliation']['status'] === 'success' && $data['extensions']['calendar']['last_operation']['status'] === 'failed', 'Operation and reconciliation results are separate');
+    $recorder->record(['status' => 'failed', 'message' => 'observation unavailable'], [], true);
+    $data = $profiles->load()->profile->toArray();
+    checkMetadata($data['extensions']['calendar']['observed_state'] === 'unknown' && $data['extensions']['calendar']['installed_version'] === null, 'Unavailable observations never reuse stale runtime state');
+    checkMetadata($data['last_reconciliation']['status'] === 'failed' && $data['extensions']['calendar']['desired_state'] === 'enabled', 'Failed reconciliation persists without changing intention');
+    checkMetadata($data['extensions']['calendar']['installed_at'] === $calendar['installed_at'], 'Reconciliation does not rewrite installation history');
+} finally {
+    if (is_file($config->profilePath())) unlink($config->profilePath());
+    if (is_dir($directory)) rmdir($directory);
+}

@@ -27,7 +27,7 @@ final class RuntimeVerifier
                 try {
                     $snapshot = ($source === 'cli') ? RuntimeSnapshot::freshCli() : $this->apache->observe();
                     $loaded = array_fill_keys(array_map([ExtensionName::class, 'canonical'], $snapshot['extensions']), true);
-                    $observed[$source] = ['version' => $snapshot['version'], 'sapi' => $snapshot['sapi'], 'extensions' => []];
+                    $observed[$source] = ['version' => $snapshot['version'], 'sapi' => $snapshot['sapi'], 'observed_at' => $snapshot['observed_at'], 'extension_versions' => isset($snapshot['extension_versions']) ? $snapshot['extension_versions'] : [], 'extensions' => []];
                     foreach ($expected as $extension => $enabled) {
                         $isLoaded = isset($loaded[strtolower($extension)]);
                         $observed[$source]['extensions'][$extension] = $isLoaded;

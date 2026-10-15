@@ -11,10 +11,15 @@ final class RuntimeSnapshot
     {
         $extensions = get_loaded_extensions();
         sort($extensions, SORT_NATURAL | SORT_FLAG_CASE);
+        $metadata = [];
+        foreach ($extensions as $name) {
+            $version = phpversion($name);
+            $metadata[\Wsdd\PhpAdmin\Extensions\ExtensionName::canonical($name)] = $version === false ? null : $version;
+        }
         $files = php_ini_scanned_files();
         $scanDir = getenv('PHP_INI_SCAN_DIR');
         $runtimes = ['apache2handler' => 'apache', 'fpm-fcgi' => 'fpm'];
-        return \Wsdd\PhpAdmin\Support\TypeGuard::check(['version' => PHP_VERSION, 'sapi' => PHP_SAPI, 'runtime' => isset($runtimes[PHP_SAPI]) ? $runtimes[PHP_SAPI] : PHP_SAPI, 'ini_file' => php_ini_loaded_file() ?: null, 'ini_scan_dir' => ($scanDir !== false && $scanDir !== '') ? $scanDir : ($files ? dirname(trim(explode(',', $files)[0])) : (defined('PHP_CONFIG_FILE_SCAN_DIR') ? PHP_CONFIG_FILE_SCAN_DIR : null)), 'extensions' => $extensions, 'observed_at' => gmdate('c')], 'array');
+        return \Wsdd\PhpAdmin\Support\TypeGuard::check(['version' => PHP_VERSION, 'sapi' => PHP_SAPI, 'runtime' => isset($runtimes[PHP_SAPI]) ? $runtimes[PHP_SAPI] : PHP_SAPI, 'ini_file' => php_ini_loaded_file() ?: null, 'ini_scan_dir' => ($scanDir !== false && $scanDir !== '') ? $scanDir : ($files ? dirname(trim(explode(',', $files)[0])) : (defined('PHP_CONFIG_FILE_SCAN_DIR') ? PHP_CONFIG_FILE_SCAN_DIR : null)), 'extensions' => $extensions, 'extension_versions' => $metadata, 'observed_at' => gmdate('c')], 'array');
     }
     /**
      * @param string $json

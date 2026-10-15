@@ -2,6 +2,8 @@
 
 Fecha local: 2026-10-14.
 
+Decision de alcance del 2026-10-15: el fallback se desarrollara y utilizara solo ante una necesidad demostrada mediante issue y una alternativa segura verificable. No se considera implementado ni proximo desarrollo automatico. Se mantiene el metodo autorizado con sus diagnosticos y controles de seguridad. Ver [Decision documentada](extension-configuration-review-2026-10-15.md#decision-posterior-sobre-fallback).
+
 Estado vigente tras recreacion y revision de codigo: `development-status-2026-10-15.md`. Reinstalacion automatica bcmath validada en 5.6/7.2/7.4/8.1/8.3. Las 21 recetas no equivalen a compilacion certificada de todas ellas; fallback_methods permanece vacio y no hay motor ejecutable de fallback ni reglas de incompatibilidad. Son limites de implementacion, no funcionalidades ya terminadas.
 
 Actualizacion 2026-10-15: se incorporaron PHP 5.6/7.2 con el mismo resolver, inventario exacto de fuentes y 21 recetas. Variantes revisadas para GD anterior a 7.4 (--with-freetype-dir y --with-jpeg-dir) y ZIP antiguo (zlib1g-dev/--with-zlib-dir). Las pruebas de recetas comprueban estas diferencias para cada minor. PHP 7.2 supero instalaciones reales calendar/bcmath/pdo_pgsql; PHP 5.6 supero calendar/bcmath, pero pdo_pgsql fallo en apt-get update por firmas/claves y hash del snapshot Stretch. No se cambiaron repositorios ni se desactivaron verificaciones: el instalador fuerza AllowUnauthenticated=false, AllowInsecureRepositories=false y AllowDowngradeToInsecureRepositories=false. Los fallos no equivalen a exito ni a receta ausente. Ver `php56-php72-validation-2026-10-15.md`.

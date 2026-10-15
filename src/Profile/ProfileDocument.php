@@ -97,6 +97,23 @@ final class ProfileDocument
     /**
      * @return array<string, mixed>
      */
+    public function withMetadata(array $extensions, $reconciliation = null)
+    {
+        $data = $this->data;
+        $current = $this->extensions();
+        foreach ($extensions as $name => $metadata) {
+            if (isset($current[$name])) {
+                // Observations must never introduce or replace desired state.
+                unset($metadata['desired_state'], $metadata['source'], $metadata['managed_by']);
+                $current[$name] = array_replace($current[$name], $metadata);
+            }
+        }
+        $data['extensions'] = $current;
+        if ($reconciliation !== null) $data['last_reconciliation'] = $reconciliation;
+        $data['updated_at'] = gmdate('c');
+        return new self($data);
+    }
+    /** @return array<string, mixed> */
     public function toArray()
     {
         $data = $this->data;

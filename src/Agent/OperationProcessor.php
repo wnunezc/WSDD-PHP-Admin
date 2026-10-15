@@ -111,6 +111,12 @@ final class OperationProcessor
                 $reloadFailed = (isset($result->details['reload']['status']) ? $result->details['reload']['status'] : null) === 'failed';
                 $result = OperationResult::finish($operation->id, ($verification['status'] === 'success' && !$reloadFailed) ? 'success' : 'failed', $startedAt, ($verification['status'] === 'success' && !$reloadFailed) ? $result->message : 'Changes were applied, but runtime verification failed; inspect verification and reload details.', array_replace($result->details, ['verification' => $verification]));
             }
+            if ($this->profiles->load()->isLoaded() && ($operation->extension !== null || $operation->type === OperationType::RECONCILE)) {
+                $installations = [];
+                if (isset($result->details['install']['method'])) $installations[$operation->extension] = $result->details['install'];
+                $report = array_replace($result->details, ['status' => $result->status, 'message' => $result->message]);
+                (new \Wsdd\PhpAdmin\Profile\ProfileMetadataRecorder($this->profiles, new \Wsdd\PhpAdmin\Extensions\ExtensionCatalog()))->record($report, $installations, $operation->type === OperationType::RECONCILE, $operation->extension);
+            }
             $this->auditOperation($operation, $result);
             return \Wsdd\PhpAdmin\Support\TypeGuard::check($result, 'Wsdd\PhpAdmin\Operations\OperationResult');
         } catch (\Exception $exception) {

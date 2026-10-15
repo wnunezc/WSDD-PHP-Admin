@@ -4,6 +4,8 @@ Fecha: 2026-10-11
 
 Estado revisado: 2026-10-15. Resumen vigente, cierres por entorno y pendientes comprobados en codigo: [Estado real y revision de cierre](development-status-2026-10-15.md). Los avances fechados anteriores se conservan como historial; no sustituyen este estado vigente.
 
+Avance posterior al respaldo cd9eb9d: implementado registro ampliado del perfil (observaciones CLI/Apache, evidencia de instalacion, dependencias y resultados de reconciliacion), sin alterar intenciones ni esquema v1. Pruebas aisladas aprobadas en 5.6/8.4; no equivale a bateria funcional final ni cierre adicional de fases. Se acuerda completar desarrollo pendiente antes de las validaciones pendientes. Ver [Metadatos del perfil](profile-metadata-2026-10-15.md).
+
 Correccion posterior: fallos globales de reconciliacion y arranque sin exclusion/readiness resueltos en codigo, con validadores especificos integrados en la bateria. La comprobacion final ya aprobo tambien en PHP 5.6 reconstruido, contenedor 03a0b3463552. Evidencia y limites: [Fiabilidad de runtime](runtime-reliability-fixes-2026-10-15.md).
 
 ## Origen del proyecto
@@ -138,6 +140,14 @@ WSDD debe poder instalar WSDD-PHP-Admin sobre contenedores PHP de estas versione
 Nota: WSDD actualmente soporta PHP 5.6, 7.2, 7.4, 8.1, 8.2, 8.3 y 8.4. PHP 8.0 y PHP 8.5 quedan definidos como versiones objetivo adicionales para esta linea de trabajo.
 
 ## Caracteristicas funcionales
+
+### Aclaracion de alcance acordada el 2026-10-15
+
+Correccion posterior expresa del usuario: las ampliaciones se atenderan cuando un issue demuestre su necesidad y NO deben mantener ni reabrir fases del alcance actual. Esto incluye recuperacion/modo seguro ampliados, ademas de incompatibilidades y fallback ya diferidos. Queda retirada la recomendacion anterior de desarrollarlos como siguiente bloque obligatorio. Las fases 1-5 conservan su cierre; la fase 6 conserva exclusivamente sus pendientes de soporte/evidencia, no ampliaciones. Los requisitos originales y recomendaciones anteriores que aparecen debajo son historial y quedan subordinados a esta decision.
+
+Decision posterior del usuario: el fallback de instalacion se implementara y utilizara cuando un issue demuestre su necesidad y documente una alternativa segura verificable. Hasta entonces se conserva el metodo autorizado con skipped/failed y diagnostico segun corresponda; un estado deseado enabled incumplido no se convierte en exito de reconciliacion. No se declara implementado el fallback ni se introduce como obligacion nueva para WSDD. Se recomienda continuar con recuperacion ampliada/modo seguro y despues filtros por estado, revisando primero el codigo; las validaciones integrales quedan al final.
+
+El usuario decide tratar incompatibilidades como issues cuando se detecten problemas, con evidencia y reproduccion, en lugar de implementar ahora un motor preventivo sin casos confirmados. Los requisitos originales se conservan debajo como trazabilidad, no como funcionalidad implementada. La revision documental de las 21 recetas actuales no identifico parametros de usuario obligatorios para cargar esas extensiones; no se agregan formularios sin necesidad comprobada. El flujo condicional para extensiones que si los requieran sigue sin implementar. Ver [Revision, fuentes y limites](extension-configuration-review-2026-10-15.md). No se cierran fases ni se adelanta la bateria final por esta decision.
 
 ### 1. Aplicacion web
 
@@ -696,7 +706,7 @@ Fases cerradas, alcance ratificado al 2026-10-15:
 Fases abiertas:
 
 - Fase 6 sigue abierta globalmente. Se cierran persistencia, arranque automatico y continuidad observada del agente en los siete entornos; tambien reinstalacion enabled en 5.6/7.2/7.4/8.1/8.3. PHP 8.2/8.4 quedaron removed en esta recreacion y no acreditan ese ultimo caso. Siguen pendientes PHP 8.0/8.5 y dependencias autenticadas Stretch para completar la bateria 5.6.
-- Los cierres 1-5 son hitos iniciales Dev/hardening base, no aceptacion total ni Release. Siguen pendientes incompatibilidades, parametros requeridos, metadata completa del perfil y recuperacion ampliada. Los dos defectos de fiabilidad reproducidos se corrigieron y tienen pruebas de fallos/concurrencia, no solo pruebas felices.
+- Las fases 1-5 estan cerradas para Dev/hardening base, no para Release. Las ampliaciones diferidas a issues no bloquean ni reabren estos cierres. Los metadatos del perfil se implementaron posteriormente y conservan su validacion funcional final pendiente. Los dos defectos de fiabilidad reproducidos se corrigieron y tienen pruebas de fallos/concurrencia, no solo pruebas felices.
 
 Siguiente paso recomendado:
 

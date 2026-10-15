@@ -21,9 +21,11 @@ La ruta puede cambiarse con:
 WSDD_PHP_ADMIN_PROFILE_DIR
 ```
 
-## Estructura ampliada prevista
+## Metadatos implementados el 2026-10-15
 
-El siguiente ejemplo describe metadata objetivo del plan, NO todos los campos que el codigo registra actualmente. ProfileDocument::withExtensionState genera desired_state, managed_by, source y updated_at; metodo/version/dependencias/estado observado no se persisten sistematicamente y last_reconciliation permanece sin actualizacion. Los campos de conflictos de este ejemplo no tienen un motor de bloqueo implementado. La observacion efectiva se obtiene de CLI/Apache y los detalles de operaciones/catalogo; no deben confundirse con metadata completa del perfil. Revision vigente: `development-status-2026-10-15.md`.
+ProfileDocument::withExtensionState conserva la escritura de intencion. ProfileMetadataRecorder completa las entradas existentes tras operaciones y reconciliacion managed; no crea intenciones ni cambia desired_state. El esquema sigue en version 1, con ampliacion aditiva y lectura de perfiles anteriores sin migracion destructiva. Detalle y evidencia: [Metadatos del perfil](profile-metadata-2026-10-15.md).
+
+El ejemplo muestra campos persistidos, con valores ilustrativos. null significa desconocido/no comprobado, no ausencia certificada. Los campos de conflictos aun no tienen motor de bloqueo; no se inventan listas vacias de compatibilidad.
 
 ```json
 {
@@ -44,8 +46,8 @@ El siguiente ejemplo describe metadata objetivo del plan, NO todos los campos qu
       "install_method": "docker-php-ext-install",
       "installed_version": null,
       "system_dependencies": [],
-      "incompatible_with": [],
-      "conflicts_with": [],
+      "incompatible_with": null,
+      "conflicts_with": null,
       "origin": "core",
       "installed_at": null,
       "updated_at": "2026-10-11T00:00:00+00:00",
@@ -73,7 +75,7 @@ Cuando una operacion managed real cambia un `.ini` administrado, el agent actual
 }
 ```
 
-Las operaciones `skipped` no cambian el perfil.
+Las operaciones `skipped` no cambian el estado deseado. Pueden registrar last_operation y metadatos de observacion para una entrada ya existente; no agregan una extension al perfil.
 
 ## Estado actual
 

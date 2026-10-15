@@ -112,6 +112,8 @@ Modulo `src/Runtime/`. Debe detectar binario PHP, version, `php.ini`, scan dir, 
 
 Modulo `src/Profile/`. Debe leer y escribir el estado deseado, estado observado, metadata de extensiones, resultados de reconciliacion y compatibilidad. El directorio por defecto esperado dentro del contenedor es `/var/lib/wsdd-php-admin`, configurable por `WSDD_PHP_ADMIN_PROFILE_DIR`.
 
+Ampliacion implementada el 2026-10-15: ProfileStateRecorder conserva la intencion; ProfileMetadataRecorder registra evidencia de RuntimeVerifier y del instalador, dependencias de receta y resultados de reconciliacion/operaciones. Se mantiene esquema v1 aditivo. Las observaciones persistidas estan fechadas y no sustituyen la consulta fresca de CLI/Apache en la UI. Reglas de conflictos desconocidas permanecen null, sin implicar un motor implementado. Ver [Metadatos del perfil](profile-metadata-2026-10-15.md).
+
 Cuando el agent aplica una operacion managed que cambia un `.ini` propio, registra `desired_state`, `managed_by`, `source` y `updated_at` en `profile.json`. Las operaciones `skipped` no cambian la intencion declarativa.
 
 ### Catalogo y motor de extensiones

@@ -51,6 +51,35 @@ final class ManagedReconciler
      */
     public function apply()
     {
+        try {
+            $report = $this->reconcile();
+        } catch (\Exception $error) {
+            $this->recordFailure($error->getMessage());
+            throw $error;
+        } catch (\Throwable $error) {
+            $this->recordFailure($error->getMessage());
+            throw $error;
+        }
+        if ($this->profiles->load()->isLoaded()) {
+            $installations = [];
+            foreach ($report['applied'] as $action) {
+                if (isset($action['install']['method'])) $installations[$action['extension']] = $action['install'];
+            }
+            (new \Wsdd\PhpAdmin\Profile\ProfileMetadataRecorder($this->profiles, new \Wsdd\PhpAdmin\Extensions\ExtensionCatalog()))->record($report, $installations, true);
+        }
+        return $report;
+    }
+
+    private function recordFailure($message)
+    {
+        if ($this->profiles->load()->isLoaded()) {
+            (new \Wsdd\PhpAdmin\Profile\ProfileMetadataRecorder($this->profiles, new \Wsdd\PhpAdmin\Extensions\ExtensionCatalog()))->record(
+                ['status' => 'failed', 'message' => $message, 'errors' => [$message]], [], true);
+        }
+    }
+
+    private function reconcile()
+    {
         $profileResult = $this->profiles->load();
         if (!$profileResult->isLoaded() || $profileResult->profile === null) {
             return \Wsdd\PhpAdmin\Support\TypeGuard::check(['status' => 'failed', 'message' => isset($profileResult->error) ? $profileResult->error : 'Persistent profile does not exist.', 'applied' => [], 'skipped' => [], 'reload' => $this->noReload('Profile could not be loaded.')], 'array');
@@ -104,12 +133,15 @@ final class ManagedReconciler
             $verification = $this->runtimeVerifier->verify($expected, $this->verificationTimeoutSeconds);
         } else {
             // Isolated callers without an Apache verifier must still verify fresh CLI state.
-            $loaded = array_fill_keys(array_map([ExtensionName::class, 'canonical'], \Wsdd\PhpAdmin\Runtime\RuntimeSnapshot::freshCli()['extensions']), true);
+            $snapshot = \Wsdd\PhpAdmin\Runtime\RuntimeSnapshot::freshCli();
+            $loaded = array_fill_keys(array_map([ExtensionName::class, 'canonical'], $snapshot['extensions']), true);
+            $cli = ['version' => $snapshot['version'], 'observed_at' => $snapshot['observed_at'], 'extension_versions' => $snapshot['extension_versions'], 'extensions' => []];
             $mismatches = [];
             foreach ($expected as $name => $enabled) {
+                $cli['extensions'][$name] = isset($loaded[$name]);
                 if (isset($loaded[$name]) !== $enabled) $mismatches[] = 'cli: extension ' . $name . ' does not match expected state.';
             }
-            $verification = ['status' => $mismatches === [] ? 'success' : 'failed', 'errors' => $mismatches];
+            $verification = ['status' => $mismatches === [] ? 'success' : 'failed', 'errors' => $mismatches, 'observed' => ['cli' => $cli]];
         }
         $failed = $errors !== [] || (isset($reload['status']) ? $reload['status'] : null) === 'failed' || $verification['status'] === 'failed';
         return \Wsdd\PhpAdmin\Support\TypeGuard::check(['status' => $failed ? 'failed' : 'success', 'message' => $failed ? 'Desired runtime state was not satisfied; inspect installation, verification and reload details.' : 'Reconciliation verified the desired runtime state.', 'errors' => $errors, 'verification' => $verification, 'applied' => $applied, 'skipped' => $skipped, 'reload' => $reload], 'array');
