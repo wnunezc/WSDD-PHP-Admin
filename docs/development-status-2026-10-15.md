@@ -6,6 +6,8 @@ Actualizacion de fiabilidad del mismo dia: P1/P2 descritos abajo fueron corregid
 
 ## Dictamen
 
+Preparacion de publicacion 1.0.0 solicitada por el usuario: version, licencia MIT, documentacion y empaquetado separados de los datos persistentes. No equivale a repetir/reabrir los hitos Dev ni a publicar remotamente. Ver [Preparacion 1.0.0](release-1.0.0.md).
+
 El hito inicial de PHP 8.3 esta implementado y validado. El downgrade del codigo comun permite ejecutar la misma aplicacion en PHP 5.6, 7.2, 7.4 y 8.1-8.4. Las fases 1-5 estan cerradas en el alcance inicial Dev/hardening base y no se reabren por ampliaciones. La fase 6 conserva pendientes de versiones/evidencia de validacion, no por ampliaciones diferidas a issues. No se declara el producto listo para distribucion o produccion.
 
 ## Reconstruccion general validada

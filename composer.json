@@ -2,7 +2,15 @@
   "name": "wsdd/php-admin",
   "description": "Web admin installed inside PHP containers to manage PHP extensions and configuration with persistent profile reconciliation.",
   "type": "project",
-  "license": "proprietary",
+  "license": "MIT",
+  "homepage": "https://github.com/wnunezc/WSDD-PHP-Admin",
+  "authors": [
+    {"name": "wnunezc", "homepage": "https://github.com/wnunezc"}
+  ],
+  "support": {
+    "issues": "https://github.com/wnunezc/WSDD-PHP-Admin/issues",
+    "source": "https://github.com/wnunezc/WSDD-PHP-Admin"
+  },
   "require": {
     "php": "^5.6 || ^7.0 || ^8.0"
   },
