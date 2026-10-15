@@ -1,0 +1,41 @@
+#!/usr/bin/env php
+<?php 
+require dirname(__DIR__) . '/src/Support/bootstrap.php';
+use Wsdd\PhpAdmin\Profile\ProfileRepository;
+use Wsdd\PhpAdmin\Runtime\RuntimeDetector;
+use Wsdd\PhpAdmin\Support\AppConfig;
+$root = sys_get_temp_dir() . '/wsdd-profile-bootstrap-' . bin2hex(random_bytes(8));
+$config = new AppConfig(['paths' => ['persistent_root' => $root]]);
+$profiles = new ProfileRepository($config);
+$runtime = (new RuntimeDetector())->detect();
+try {
+    $profiles->loadOrInitialize($runtime);
+    if (!$profiles->load()->isLoaded()) {
+        throw new RuntimeException('Missing profile was not initialized.');
+    }
+    $desired = $profiles->loadOrInitialize($runtime)->withExtensionState('bcmath', 'enabled', 'validation');
+    $profiles->save($desired);
+    $before = file_get_contents($config->profilePath());
+    $profiles->loadOrInitialize($runtime);
+    if (file_get_contents($config->profilePath()) !== $before) {
+        throw new RuntimeException('Existing profile was modified during bootstrap.');
+    }
+    file_put_contents($config->profilePath(), '{invalid');
+    $rejected = false;
+    try {
+        $profiles->loadOrInitialize($runtime);
+    } catch (RuntimeException $exception) {
+        $rejected = true;
+    }
+    if (!$rejected || file_get_contents($config->profilePath()) !== '{invalid') {
+        throw new RuntimeException('Invalid profile was not rejected and preserved.');
+    }
+    fwrite(STDOUT, "Profile bootstrap validation passed: initialization, preservation, invalid JSON rejection.\n");
+} finally {
+    if (is_file($config->profilePath())) {
+        unlink($config->profilePath());
+    }
+    if (is_dir($root)) {
+        rmdir($root);
+    }
+}

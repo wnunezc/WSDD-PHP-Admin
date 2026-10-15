@@ -1,0 +1,178 @@
+#!/usr/bin/env php
+<?php 
+require dirname(__DIR__) . '/src/Support/bootstrap.php';
+use Wsdd\PhpAdmin\Permissions\PermissionChecker;
+use Wsdd\PhpAdmin\Audit\AuditLogger;
+use Wsdd\PhpAdmin\Profile\ProfileRepository;
+use Wsdd\PhpAdmin\Reconciliation\ReadOnlyReconciler;
+use Wsdd\PhpAdmin\Reconciliation\ManagedReconciler;
+use Wsdd\PhpAdmin\Runtime\RuntimeDetector;
+use Wsdd\PhpAdmin\Support\AppConfig;
+use Wsdd\PhpAdmin\Agent\AgentLogger;
+use Wsdd\PhpAdmin\Agent\AgentRunner;
+use Wsdd\PhpAdmin\Agent\OperationProcessor;
+use Wsdd\PhpAdmin\Ini\ManagedIniRepository;
+use Wsdd\PhpAdmin\Extensions\ExtensionCatalog;
+use Wsdd\PhpAdmin\Extensions\ExtensionInstaller;
+use Wsdd\PhpAdmin\Operations\OperationRepository;
+use Wsdd\PhpAdmin\Operations\OperationService;
+use Wsdd\PhpAdmin\Profile\ProfileStateRecorder;
+use Wsdd\PhpAdmin\Recovery\IniBackupRepository;
+use Wsdd\PhpAdmin\Service\ServiceReloader;
+use Wsdd\PhpAdmin\Runtime\ApacheRuntimeProbe;
+use Wsdd\PhpAdmin\Runtime\RuntimeVerifier;
+$command = isset($argv[1]) ? $argv[1] : 'help';
+$commands = ['detect' => 'Detect the local PHP runtime and container capabilities.', 'permissions' => 'Inspect write/read permissions for managed paths.', 'profile:init' => 'Create the initial persistent profile if it does not exist.', 'profile:status' => 'Read the persistent profile status.', 'reconcile' => 'Compare the persistent profile with the observed PHP runtime without applying changes.', 'reconcile:managed' => 'Apply supported managed reconciliation once and exit.', 'runtime:web' => 'Internal privilege-dropped web worker; invoked only by runtime:start.', 'runtime:start' => 'Validate the selected app root and start the internal agent and web server.', 'agent:once' => 'Process pending privileged operations once and exit.', 'agent' => 'Run the privileged operations agent loop.', 'operations:list' => 'List pending operations and their results.', 'operations:create' => 'Create a test operation: operations:create <type> [extension].', 'help' => 'Show available internal commands.'];
+if ($command === 'help' || !isset($commands[$command])) {
+    fwrite(STDOUT, "WSDD-PHP-Admin internal CLI\n\n");
+    foreach ($commands as $name => $description) {
+        fwrite(STDOUT, sprintf("  %-17s %s\n", $name, $description));
+    }
+    exit(($command === 'help') ? 0 : 1);
+}
+if ($command === 'detect') {
+    $detection = (new RuntimeDetector())->detect();
+    fwrite(STDOUT, json_encode($detection->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+    exit(0);
+}
+$config = AppConfig::loadDefault();
+if ($command === 'runtime:web') {
+    $account = function_exists('posix_getpwnam') ? posix_getpwnam('www-data') : false;
+    if (!is_array($account) || !function_exists('posix_initgroups') || !function_exists('passthru') || posix_geteuid() !== 0
+        || !posix_initgroups('www-data', $account['gid']) || !posix_setgid($account['gid']) || !posix_setuid($account['uid'])
+        || posix_geteuid() !== $account['uid']) {
+        fwrite(STDERR, "Unable to drop internal web privileges to www-data.\n");
+        exit(2);
+    }
+    $server = implode(' ', array_map('escapeshellarg', [PHP_BINARY, '-S', '127.0.0.1:' . $config->serverPort(), '-t', dirname(__DIR__) . '/public']));
+    passthru('exec ' . $server, $exitCode);
+    exit($exitCode);
+}
+if ($command === 'permissions') {
+    $report = (new PermissionChecker($config))->check();
+    fwrite(STDOUT, json_encode($report->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+    exit(0);
+}
+if ($command === 'profile:status') {
+    $result = (new ProfileRepository($config))->load();
+    fwrite(STDOUT, json_encode($result->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+    exit(($result->error === null) ? 0 : 2);
+}
+if ($command === 'profile:init') {
+    $runtime = (new RuntimeDetector())->detect();
+    $repository = new ProfileRepository($config);
+    try {
+        $profile = $repository->initialize($runtime);
+    } catch (\Exception $exception) {
+        fwrite(STDERR, $exception->getMessage() . PHP_EOL);
+        exit(2);
+    } catch (Throwable $exception) {
+        fwrite(STDERR, $exception->getMessage() . PHP_EOL);
+        exit(2);
+    }
+    fwrite(STDOUT, json_encode($profile->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+    exit(0);
+}
+if ($command === 'reconcile') {
+    $runtime = (new RuntimeDetector())->detect();
+    $profile = (new ProfileRepository($config))->load();
+    $report = (new ReadOnlyReconciler())->reconcile($profile, $runtime);
+    fwrite(STDOUT, json_encode($report->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+    exit(0);
+}
+if ($command === 'reconcile:managed') {
+    $profiles = new ProfileRepository($config);
+    $managedIni = new ManagedIniRepository($config);
+    $reloader = new ServiceReloader();
+    $extensionInstaller = new ExtensionInstaller(new ExtensionCatalog());
+    $managedReconciler = new ManagedReconciler($profiles, $managedIni, $reloader, $extensionInstaller, new RuntimeVerifier(new ApacheRuntimeProbe($config)));
+    try {
+        $reconciliationLease = new \Wsdd\PhpAdmin\Support\InstanceLock($config->persistentRoot() . '/runtime/agent.lock');
+        $report = $managedReconciler->apply();
+    } catch (\Exception $exception) {
+        fwrite(STDERR, $exception->getMessage() . PHP_EOL);
+        exit(2);
+    } catch (Throwable $exception) {
+        fwrite(STDERR, $exception->getMessage() . PHP_EOL);
+        exit(2);
+    }
+    fwrite(STDOUT, json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+    exit(((isset($report['status']) ? $report['status'] : null) === 'success') ? 0 : 2);
+}
+if ($command === 'operations:list') {
+    $repository = new OperationRepository($config);
+    fwrite(STDOUT, json_encode($repository->listing(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+    exit(0);
+}
+if ($command === 'operations:create') {
+    $type = isset($argv[2]) ? $argv[2] : '';
+    $extension = isset($argv[3]) ? $argv[3] : null;
+    $service = new OperationService(new OperationRepository($config));
+    try {
+        $operation = $service->create($type, is_string($extension) ? $extension : null, 'cli');
+    } catch (\Exception $exception) {
+        fwrite(STDERR, $exception->getMessage() . PHP_EOL);
+        exit(2);
+    } catch (Throwable $exception) {
+        fwrite(STDERR, $exception->getMessage() . PHP_EOL);
+        exit(2);
+    }
+    fwrite(STDOUT, json_encode($operation->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+    exit(0);
+}
+if ($command === 'runtime:start') {
+    $appRoot = dirname(__DIR__);
+    $required = ['bin/wsdd-php-admin', 'config/wsdd-php-admin.php', 'public/index.php', 'src/Support/bootstrap.php', 'src/Support/compatibility.php', 'src/Support/ReadOnlyProperties.php', 'src/Agent/AgentRunner.php', 'src/Extensions/ExtensionInstaller.php', 'src/Security/HttpSecurity.php', 'src/Security/CredentialStore.php', 'src/Audit/AuditLogger.php', 'src/Recovery/IniBackupRepository.php', 'src/Runtime/RuntimeSnapshot.php', 'src/Runtime/ApacheRuntimeProbe.php', 'src/Runtime/RuntimeVerifier.php', 'public/runtime-probe.php', 'config/extension-catalog.php', 'config/php-compatibility.json', 'src/Support/CompatibilityPolicy.php', 'src/Extensions/CatalogEnvironment.php', 'src/Extensions/BundledExtensionDiscovery.php', 'src/Support/CommandRunner.php'];
+    $missing = [];
+    $required = array_merge($required, ['src/Support/TypeGuard.php', 'src/Support/JsonCodec.php', 'src/Support/Process.php', 'src/Support/ExecutableFinder.php', 'src/Http/HttpErrorHandler.php']);
+    $required = array_merge($required, ['src/Support/InstanceLock.php', 'src/Runtime/RuntimeStarter.php', 'public/runtime-health.php']);
+    foreach ($required as $relativePath) {
+        if (!is_file($appRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relativePath))) {
+            $missing[] = $relativePath;
+        }
+    }
+    if ($missing !== []) {
+        fwrite(STDERR, sprintf("WSDD-PHP-Admin runtime root is incomplete: %s. Missing: %s\n", $appRoot, implode(', ', $missing)));
+        exit(2);
+    }
+    try {
+        $result = (new \Wsdd\PhpAdmin\Runtime\RuntimeStarter($config, $appRoot))->start();
+        fwrite(STDOUT, json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+        exit(0);
+    } catch (\Exception $exception) {
+        fwrite(STDERR, 'WSDD-PHP-Admin runtime start failed: ' . $exception->getMessage() . PHP_EOL);
+        exit(2);
+    } catch (\Throwable $exception) {
+        fwrite(STDERR, 'WSDD-PHP-Admin runtime start failed: ' . $exception->getMessage() . PHP_EOL);
+        exit(2);
+    }
+}
+if ($command === 'agent:once' || $command === 'agent') {
+    $operations = new OperationRepository($config);
+    $profiles = new ProfileRepository($config);
+    $managedIni = new ManagedIniRepository($config);
+    $reloader = new ServiceReloader();
+    $extensionInstaller = new ExtensionInstaller(new ExtensionCatalog());
+    $audit = new AuditLogger($config);
+    $runtimeVerifier = new RuntimeVerifier(new ApacheRuntimeProbe($config));
+    $managedReconciler = new ManagedReconciler($profiles, $managedIni, $reloader, $extensionInstaller, $runtimeVerifier);
+    $processor = new OperationProcessor($managedIni, $profiles, $reloader, new ProfileStateRecorder($profiles, new RuntimeDetector()), $managedReconciler, $extensionInstaller, new IniBackupRepository($config, $managedIni), $audit, $runtimeVerifier);
+    $runner = new AgentRunner($operations, $processor, new AgentLogger($config), $managedReconciler);
+    try {
+        if ($command === 'agent:once') {
+            $processed = $runner->runOnce();
+            fwrite(STDOUT, json_encode(['processed' => $processed], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+            exit(0);
+        }
+        $runner->runLoop();
+        exit(0);
+    } catch (\Exception $exception) {
+        fwrite(STDERR, 'WSDD-PHP-Admin agent failed: ' . $exception->getMessage() . PHP_EOL);
+        exit(2);
+    } catch (\Throwable $exception) {
+        fwrite(STDERR, 'WSDD-PHP-Admin agent failed: ' . $exception->getMessage() . PHP_EOL);
+        exit(2);
+    }
+}
+fwrite(STDERR, sprintf("Command '%s' is reserved by the project architecture and is not implemented in this scaffold.\n", $command));
+exit(2);

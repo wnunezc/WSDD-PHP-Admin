@@ -1,0 +1,70 @@
+#!/usr/bin/env php
+<?php 
+require dirname(__DIR__) . '/src/Support/bootstrap.php';
+use Wsdd\PhpAdmin\Runtime\RuntimeSnapshot;
+use Wsdd\PhpAdmin\Runtime\ApacheRuntimeProbe;
+use Wsdd\PhpAdmin\Runtime\RuntimeVerifier;
+use Wsdd\PhpAdmin\Support\AppConfig;
+$extensionDir = ini_get('extension_dir');
+$extension = null;
+foreach (['bz2', 'calendar', 'sodium', 'pdo_mysql'] as $candidate) {
+    if (is_file($extensionDir . '/' . $candidate . '.so')) {
+        $extension = $candidate;
+        break;
+    }
+}
+if ($extension === null) {
+    throw new RuntimeException('This regression requires an existing standalone bz2, calendar or sodium shared module. No module was installed.');
+}
+$module = $extensionDir . '/' . $extension . '.so';
+$nameLiteral = var_export($extension, true);
+$root = sys_get_temp_dir() . '/wsdd-observation-' . bin2hex(random_bytes(8));
+mkdir($root);
+mkdir($root . '/ini');
+file_put_contents($root . '/php.ini', '');
+$snapshotFile = dirname(__DIR__) . '/src/Support/bootstrap.php';
+$child = 'require ' . var_export($snapshotFile, true) . ';' . '$old = extension_loaded(' . $nameLiteral . ');' . 'file_put_contents(' . var_export($root . '/ini/test.ini', true) . ', ' . var_export('extension=' . $module . "\n", true) . ');' . '$fresh = \Wsdd\PhpAdmin\Runtime\RuntimeSnapshot::freshCli();' . 'unlink(' . var_export($root . '/ini/test.ini', true) . ');' . '$removed = \Wsdd\PhpAdmin\Runtime\RuntimeSnapshot::freshCli();' . 'if ($old || !in_array(' . $nameLiteral . ', $fresh["extensions"], true) || in_array(' . $nameLiteral . ', $removed["extensions"], true) || extension_loaded(' . $nameLiteral . ')) { exit(1); }' . 'echo "Fresh runtime observation detects enable/disable while the original process stays unloaded.\n";';
+$env = ['PHPRC' => $root . '/php.ini', 'PHP_INI_SCAN_DIR' => $root . '/ini'];
+try {
+    $process = \Wsdd\PhpAdmin\Support\Process::open([PHP_BINARY, '-r', $child], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $env);
+    if (!is_resource($process)) {
+        throw new RuntimeException('Unable to start isolated runtime regression.');
+    }
+    $output = stream_get_contents($pipes[1]);
+    $errors = stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    if (proc_close($process) !== 0) {
+        throw new RuntimeException('Runtime observation regression failed: ' . $errors . $output);
+    }
+    fwrite(STDOUT, 'Existing test module: ' . $extension . PHP_EOL . $output);
+    try {
+        RuntimeSnapshot::decode('{"version":"8.4","sapi":"cli","runtime":"cli","extensions":[42]}');
+        throw new LogicException('Invalid snapshot was accepted.');
+    } catch (RuntimeException $exception) {
+        fwrite(STDOUT, "Invalid runtime snapshots are rejected.\n");
+    }
+    $previousHost = getenv('WSDD_PHP_ADMIN_APACHE_PROBE_HOST');
+    putenv('WSDD_PHP_ADMIN_APACHE_PROBE_HOST=missing-probe.invalid');
+    try {
+        $verifier = new RuntimeVerifier(new ApacheRuntimeProbe(new AppConfig(['paths' => ['persistent_root' => $root]])));
+        $result = $verifier->verify([$extension => extension_loaded($extension)], 0);
+        if ($result['status'] !== 'failed' || $result['errors'] === [] || !isset($result['observed']['cli'])) {
+            throw new RuntimeException('Unavailable Apache must not be reported as verified by CLI alone.');
+        }
+        fwrite(STDOUT, "Apache observation failure cannot produce a successful runtime verification.\n");
+    } finally {
+        putenv(($previousHost === false) ? 'WSDD_PHP_ADMIN_APACHE_PROBE_HOST' : ('WSDD_PHP_ADMIN_APACHE_PROBE_HOST=' . $previousHost));
+    }
+} finally {
+    foreach ([$root . '/ini/test.ini', $root . '/php.ini', $root . '/runtime/probe.key'] as $file) {
+        if (is_file($file)) {
+            unlink($file);
+        }
+    }
+    rmdir($root . '/ini');
+    if (is_dir($root . '/runtime')) {
+        rmdir($root . '/runtime');
+    }
+    rmdir($root);
+}

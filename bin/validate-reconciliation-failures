@@ -1,0 +1,79 @@
+#!/usr/bin/env php
+<?php
+
+require dirname(__DIR__) . '/src/Support/bootstrap.php';
+
+use Wsdd\PhpAdmin\Support\AppConfig;
+use Wsdd\PhpAdmin\Profile\ProfileDocument;
+use Wsdd\PhpAdmin\Profile\ProfileRepository;
+use Wsdd\PhpAdmin\Runtime\RuntimeDetector;
+use Wsdd\PhpAdmin\Reconciliation\ManagedReconciler;
+use Wsdd\PhpAdmin\Ini\ManagedIniRepository;
+use Wsdd\PhpAdmin\Service\ServiceReloader;
+use Wsdd\PhpAdmin\Extensions\ExtensionCatalog;
+use Wsdd\PhpAdmin\Extensions\ExtensionInstaller;
+
+function check($condition, $message) {
+    if (!$condition) throw new RuntimeException($message);
+    echo 'PASS ' . $message . PHP_EOL;
+}
+
+$directory = sys_get_temp_dir() . '/wsdd-reconcile-failures-' . bin2hex(random_bytes(6));
+mkdir($directory, 0775);
+mkdir($directory . '/ini');
+$config = new AppConfig(['paths' => ['persistent_root' => $directory, 'managed_ini_dir' => $directory . '/ini', 'managed_ini_prefix' => 'zz-review-', 'audit_log' => $directory . '/audit.log']]);
+$profiles = new ProfileRepository($config);
+$reconciler = new ManagedReconciler($profiles, new ManagedIniRepository($config), new ServiceReloader(), new ExtensionInstaller(new ExtensionCatalog()));
+$runtime = (new RuntimeDetector())->detect();
+try {
+    $profiles->save(ProfileDocument::createEmpty($runtime)->withExtensionState('wsdd_review_missing', 'enabled', 'fixture'));
+    $hash = hash_file('sha256', $config->profilePath());
+    $report = $reconciler->apply();
+    check($report['status'] === 'failed' && $report['verification']['status'] === 'failed' && $report['applied'] === [], 'Unmet enabled requirement cannot report global success');
+    check(hash_file('sha256', $config->profilePath()) === $hash, 'Failed reconciliation preserves desired profile');
+    $ini = $directory . '/ini/zz-review-wsdd_review_missing.ini';
+    file_put_contents($ini, "extension=wsdd_review_missing.so\n");
+    $report = $reconciler->apply();
+    check($report['status'] === 'failed' && $report['verification']['status'] === 'failed', 'Existing INI without a loaded module cannot report success');
+    $verified = new ManagedReconciler($profiles, new ManagedIniRepository($config), new ServiceReloader(), new ExtensionInstaller(new ExtensionCatalog()), new \Wsdd\PhpAdmin\Runtime\RuntimeVerifier(new \Wsdd\PhpAdmin\Runtime\ApacheRuntimeProbe(AppConfig::loadDefault())), 0);
+    $report = $verified->apply();
+    check($report['status'] === 'failed' && isset($report['verification']['observed']['cli'], $report['verification']['observed']['apache']) && $report['verification']['status'] === 'failed', 'Unchanged INI is checked against both real CLI and Apache snapshots');
+    $managed = new ManagedIniRepository($config);
+    $processor = new \Wsdd\PhpAdmin\Agent\OperationProcessor($managed, $profiles, new ServiceReloader(), new \Wsdd\PhpAdmin\Profile\ProfileStateRecorder($profiles, new RuntimeDetector()), $reconciler, new ExtensionInstaller(new ExtensionCatalog()), new \Wsdd\PhpAdmin\Recovery\IniBackupRepository($config, $managed), new \Wsdd\PhpAdmin\Audit\AuditLogger($config), new \Wsdd\PhpAdmin\Runtime\RuntimeVerifier(new \Wsdd\PhpAdmin\Runtime\ApacheRuntimeProbe(AppConfig::loadDefault())));
+    $operation = \Wsdd\PhpAdmin\Operations\Operation::create('reconcile', null, 'fixture');
+    $result = $processor->process($operation);
+    check($result->status === 'failed' && $result->details['verification']['status'] === 'failed' && $result->details['verification']['errors'] !== [], 'Failed operation results retain verification diagnostics');
+    unlink($ini);
+
+    if (getenv('WSDD_REVIEW_NONROOT') === '1') {
+        $candidate = null;
+        foreach ((new ExtensionCatalog())->status(get_loaded_extensions()) as $name => $entry) {
+            if ($entry['installable'] && !$entry['available']) { $candidate = $name; break; }
+        }
+        check($candidate !== null, 'An absent catalog candidate exists for root-permission failure');
+        $profiles->save(ProfileDocument::createEmpty($runtime)->withExtensionState($candidate, 'enabled', 'fixture'));
+        $report = $reconciler->apply();
+        check($report['status'] === 'failed' && $report['skipped'][0]['install_status'] === 'failed' && count($report['errors']) > 0, 'Installer failure propagates to aggregate failure without any installation');
+    }
+
+    $profiles->save(ProfileDocument::createEmpty($runtime)->withExtensionState('json', 'enabled', 'fixture'));
+    $report = $reconciler->apply();
+    check($report['status'] === 'success' && $report['verification']['status'] === 'success' && !$report['reload']['attempted'], 'Idempotent reconciliation still verifies the actual fresh runtime');
+    $result = $processor->process(\Wsdd\PhpAdmin\Operations\Operation::create('reconcile', null, 'fixture'));
+    check($result->status === 'success' && isset($result->details['verification']['observed']['apache']), 'The final operation verifier replaces earlier diagnostics with the latest CLI/Apache result');
+    $bad = ProfileDocument::createEmpty($runtime)->toArray();
+    $bad['extensions'] = ['json' => ['desired_state' => 'invalid']];
+    $profiles->save(ProfileDocument::fromArray($bad));
+    check($reconciler->apply()['status'] === 'failed', 'Invalid desired states cannot report success');
+    file_put_contents($config->profilePath(), '{invalid');
+    $cli = (new \Wsdd\PhpAdmin\Support\CommandRunner())->run([PHP_BINARY, dirname(__DIR__) . '/bin/wsdd-php-admin', 'reconcile:managed'], 5, ['WSDD_PHP_ADMIN_PROFILE_DIR' => $directory, 'WSDD_PHP_ADMIN_INI_DIR' => $directory . '/ini']);
+    check($cli['exit_code'] === 2, 'CLI returns nonzero on unsuccessful reconciliation');
+} finally {
+    foreach (glob($directory . '/ini/*') ?: [] as $path) unlink($path);
+    if (is_file($config->profilePath())) unlink($config->profilePath());
+    if (is_file($directory . '/audit.log')) unlink($directory . '/audit.log');
+    if (is_file($directory . '/runtime/agent.lock')) unlink($directory . '/runtime/agent.lock');
+    if (is_dir($directory . '/runtime')) rmdir($directory . '/runtime');
+    rmdir($directory . '/ini');
+    rmdir($directory);
+}

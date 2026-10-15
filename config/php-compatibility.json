@@ -1,0 +1,22 @@
+{
+  "runtime_minimum": "5.6",
+  "composer_requirement": "^5.6 || ^7.0 || ^8.0",
+  "recipe_minimum": "5.6",
+  "recipe_maximum_exclusive": "8.5",
+  "recipe_versions": ["5.6", "7.2", "7.4", "8.1", "8.2", "8.3", "8.4"],
+  "container_template": "WSDD-Web-Server-PHP{minor}",
+  "admin_url_template": "https://phpadmin{minor_id}.wsdd.dock/",
+  "dev_root_template": "/var/www/html/phpadmin{minor_id}.dock",
+  "dev_root_overrides": { "8.3": "/var/www/html/phpadmin.dock" },
+  "targets": {
+    "5.6": "validated-dev-with-package-source-limit",
+    "7.2": "catalog-validated-dev",
+    "7.4": "catalog-validated-dev",
+    "8.0": "pending",
+    "8.1": "catalog-validated-dev",
+    "8.2": "catalog-validated-dev",
+    "8.3": "validated-dev",
+    "8.4": "catalog-validated-dev",
+    "8.5": "pending"
+  }
+}

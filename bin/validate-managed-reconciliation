@@ -1,0 +1,101 @@
+#!/usr/bin/env php
+<?php 
+require dirname(__DIR__) . '/src/Support/bootstrap.php';
+use Wsdd\PhpAdmin\Agent\AgentLogger;
+use Wsdd\PhpAdmin\Agent\AgentRunner;
+use Wsdd\PhpAdmin\Agent\OperationProcessor;
+use Wsdd\PhpAdmin\Audit\AuditLogger;
+use Wsdd\PhpAdmin\Ini\ManagedIniRepository;
+use Wsdd\PhpAdmin\Extensions\ExtensionCatalog;
+use Wsdd\PhpAdmin\Extensions\ExtensionInstaller;
+use Wsdd\PhpAdmin\Extensions\ExtensionName;
+use Wsdd\PhpAdmin\Runtime\RuntimeSnapshot;
+use Wsdd\PhpAdmin\Operations\OperationRepository;
+use Wsdd\PhpAdmin\Profile\ProfileDocument;
+use Wsdd\PhpAdmin\Profile\ProfileRepository;
+use Wsdd\PhpAdmin\Profile\ProfileStateRecorder;
+use Wsdd\PhpAdmin\Recovery\IniBackupRepository;
+use Wsdd\PhpAdmin\Reconciliation\ManagedReconciler;
+use Wsdd\PhpAdmin\Runtime\RuntimeDetector;
+use Wsdd\PhpAdmin\Service\ServiceReloader;
+use Wsdd\PhpAdmin\Support\AppConfig;
+use Wsdd\PhpAdmin\Support\JsonFile;
+$root = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'wsdd-php-admin-reconcile-' . bin2hex(random_bytes(4));
+$profile = $root . DIRECTORY_SEPARATOR . 'profile';
+$ini = $root . DIRECTORY_SEPARATOR . 'ini';
+$logs = $root . DIRECTORY_SEPARATOR . 'logs';
+foreach ([$profile, $ini, $logs] as $directory) {
+    if (!mkdir($directory, 0775, true) && !is_dir($directory)) {
+        throw new RuntimeException(sprintf('Unable to create "%s".', $directory));
+    }
+}
+putenv('WSDD_PHP_ADMIN_PROFILE_DIR=' . $profile);
+putenv('WSDD_PHP_ADMIN_INI_DIR=' . $ini);
+putenv('WSDD_PHP_ADMIN_LOG_DIR=' . $logs);
+putenv('WSDD_PHP_ADMIN_AGENT_LOG=' . $logs . DIRECTORY_SEPARATOR . 'agent.log');
+$config = AppConfig::loadDefault();
+$runtime = (new RuntimeDetector())->detect();
+$extension = firstAvailableUnloadedExtension();
+$profileDocument = ProfileDocument::createEmpty($runtime)->withExtensionState($extension, 'enabled', 'validation');
+JsonFile::writeAtomic($config->profilePath(), $profileDocument->toArray(), 0644);
+$profiles = new ProfileRepository($config);
+$managedIni = new ManagedIniRepository($config);
+$reloader = new ServiceReloader();
+$extensionInstaller = new ExtensionInstaller(new ExtensionCatalog());
+$managedReconciler = new ManagedReconciler($profiles, $managedIni, $reloader, $extensionInstaller);
+$runner = new AgentRunner(new OperationRepository($config), new OperationProcessor($managedIni, $profiles, $reloader, new ProfileStateRecorder($profiles, new RuntimeDetector()), $managedReconciler, $extensionInstaller, new IniBackupRepository($config, $managedIni), new AuditLogger($config)), new AgentLogger($config), $managedReconciler);
+$runner->runStartupReconciliation();
+$iniPath = $ini . DIRECTORY_SEPARATOR . 'zz-wsdd-php-admin-' . $extension . '.ini';
+assertTrue(is_file($iniPath), 'startup reconciliation creates managed INI for desired enabled extension');
+$expectedBinary = $extension . (PHP_VERSION_ID < 70000 ? '.' . PHP_SHLIB_SUFFIX : '');
+if ($extension === 'opcache' && PHP_VERSION_ID < 70000) $expectedBinary = rtrim(ini_get('extension_dir'), '/') . '/' . $expectedBinary;
+assertTrue(trim((string) file_get_contents($iniPath)) === (($extension === 'opcache') ? 'zend_extension=' : 'extension=') . $expectedBinary, 'managed INI contains expected extension directive');
+$before = filemtime($iniPath);
+sleep(1);
+$runner->runStartupReconciliation();
+$after = filemtime($iniPath);
+assertTrue($before === $after, 'startup reconciliation is idempotent when managed INI already exists');
+assertTrue(is_file($config->agentLog()), 'startup reconciliation writes agent log');
+assertTrue($managedIni->isExtensionLoadedByCurrentConfiguration('json'), 'managed INI repository observes loaded extensions with a fresh PHP process');
+$dockerGenerated = $ini . DIRECTORY_SEPARATOR . 'docker-php-ext-calendar.ini';
+file_put_contents($dockerGenerated, "extension=calendar\n");
+$adopted = $managedIni->adoptDockerGeneratedIni('calendar');
+assertTrue($adopted === $ini . DIRECTORY_SEPARATOR . 'zz-wsdd-php-admin-calendar.ini', 'generated docker INI is adopted into the managed prefix');
+assertTrue(!is_file($dockerGenerated), 'generated docker INI is removed after adoption');
+assertTrue(trim((string) file_get_contents((string) $adopted)) === 'extension=calendar', 'adopted managed INI keeps the extension directive');
+fwrite(STDOUT, "Managed reconciliation validation passed for extension {$extension}.\n");
+/**
+ * @return string
+ */
+function firstAvailableUnloadedExtension()
+{
+    $extensionDir = ini_get('extension_dir');
+    if (!is_string($extensionDir) || $extensionDir === '' || !is_dir($extensionDir)) {
+        throw new RuntimeException('No extension_dir is available for reconciliation validation.');
+    }
+    $files = array_merge(glob(rtrim($extensionDir, '/\\') . DIRECTORY_SEPARATOR . '*.so') ?: [], glob(rtrim($extensionDir, '/\\') . DIRECTORY_SEPARATOR . '*.dll') ?: []);
+    $loaded = array_map([ExtensionName::class, 'canonical'], RuntimeSnapshot::freshCli()['extensions']);
+    foreach ($files as $file) {
+        $extension = preg_replace('/\.(so|dll)$/i', '', basename($file));
+        if (!is_string($extension) || $extension === '') {
+            continue;
+        }
+        if (!in_array(ExtensionName::canonical($extension), $loaded, true)) {
+            return \Wsdd\PhpAdmin\Support\TypeGuard::check($extension, 'string');
+        }
+    }
+    throw new RuntimeException('No unloaded but available extension was found for reconciliation validation.');
+}
+/**
+ * @param bool $condition
+ * @param string $message
+ * @return void
+ */
+function assertTrue($condition, $message)
+{
+    $condition = \Wsdd\PhpAdmin\Support\TypeGuard::check($condition, 'bool');
+    $message = \Wsdd\PhpAdmin\Support\TypeGuard::check($message, 'string');
+    if (!$condition) {
+        throw new RuntimeException('Validation failed: ' . $message);
+    }
+}

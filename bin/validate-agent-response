@@ -1,0 +1,70 @@
+#!/usr/bin/env php
+<?php 
+require dirname(__DIR__) . '/src/Support/bootstrap.php';
+use Wsdd\PhpAdmin\Agent\AgentLogger;
+use Wsdd\PhpAdmin\Agent\AgentRunner;
+use Wsdd\PhpAdmin\Agent\OperationProcessor;
+use Wsdd\PhpAdmin\Audit\AuditLogger;
+use Wsdd\PhpAdmin\Ini\ManagedIniRepository;
+use Wsdd\PhpAdmin\Extensions\ExtensionCatalog;
+use Wsdd\PhpAdmin\Extensions\ExtensionInstaller;
+use Wsdd\PhpAdmin\Operations\OperationRepository;
+use Wsdd\PhpAdmin\Operations\OperationService;
+use Wsdd\PhpAdmin\Operations\OperationType;
+use Wsdd\PhpAdmin\Profile\ProfileRepository;
+use Wsdd\PhpAdmin\Profile\ProfileStateRecorder;
+use Wsdd\PhpAdmin\Recovery\IniBackupRepository;
+use Wsdd\PhpAdmin\Reconciliation\ManagedReconciler;
+use Wsdd\PhpAdmin\Runtime\RuntimeDetector;
+use Wsdd\PhpAdmin\Service\ServiceReloader;
+use Wsdd\PhpAdmin\Support\AppConfig;
+$root = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'wsdd-php-admin-response-' . bin2hex(random_bytes(4));
+$profile = $root . DIRECTORY_SEPARATOR . 'profile';
+$ini = $root . DIRECTORY_SEPARATOR . 'ini';
+$logs = $root . DIRECTORY_SEPARATOR . 'logs';
+foreach ([$profile, $ini, $logs] as $directory) {
+    if (!mkdir($directory, 0775, true) && !is_dir($directory)) {
+        throw new RuntimeException(sprintf('Unable to create "%s".', $directory));
+    }
+}
+putenv('WSDD_PHP_ADMIN_PROFILE_DIR=' . $profile);
+putenv('WSDD_PHP_ADMIN_INI_DIR=' . $ini);
+putenv('WSDD_PHP_ADMIN_LOG_DIR=' . $logs);
+putenv('WSDD_PHP_ADMIN_AGENT_LOG=' . $logs . DIRECTORY_SEPARATOR . 'agent.log');
+$config = AppConfig::loadDefault();
+$repository = new OperationRepository($config);
+$service = new OperationService($repository);
+$profiles = new ProfileRepository($config);
+$managedIni = new ManagedIniRepository($config);
+$reloader = new ServiceReloader();
+$extensionInstaller = new ExtensionInstaller(new ExtensionCatalog());
+$managedReconciler = new ManagedReconciler($profiles, $managedIni, $reloader, $extensionInstaller);
+$operation = $service->create(OperationType::INSTALL_EXTENSION, 'not_in_catalog', 'response-test');
+assertTrue(count($repository->pending()) === 1, 'operation starts pending');
+assertTrue(!is_file($repository->resultPath($operation->id)), 'result does not exist before agent run');
+$runner = new AgentRunner($repository, new OperationProcessor($managedIni, $profiles, $reloader, new ProfileStateRecorder($profiles, new RuntimeDetector()), $managedReconciler, $extensionInstaller, new IniBackupRepository($config, $managedIni), new AuditLogger($config)), new AgentLogger($config), $managedReconciler);
+$processed = $runner->runOnce();
+assertTrue($processed === 1, 'agent processes one pending operation');
+assertTrue(count($repository->pending()) === 0, 'operation is no longer pending after agent run');
+assertTrue(is_file($repository->resultPath($operation->id)), 'agent writes result file');
+$listing = $repository->listing();
+$item = isset($listing['items'][0]) ? $listing['items'][0] : null;
+assertTrue(is_array($item), 'operation remains visible in list');
+assertTrue((isset($item['operation']['id']) ? $item['operation']['id'] : null) === $operation->id, 'listed operation id matches');
+assertTrue((isset($item['result']['status']) ? $item['result']['status'] : null) === 'skipped', 'non-catalog install returns skipped status');
+assertTrue(str_contains((string) (isset($item['result']['message']) ? $item['result']['message'] : ''), 'not in the safe install catalog'), 'result message is explicit');
+assertTrue(is_file($config->agentLog()), 'agent writes log file');
+fwrite(STDOUT, "Agent response validation passed.\n");
+/**
+ * @param bool $condition
+ * @param string $message
+ * @return void
+ */
+function assertTrue($condition, $message)
+{
+    $condition = \Wsdd\PhpAdmin\Support\TypeGuard::check($condition, 'bool');
+    $message = \Wsdd\PhpAdmin\Support\TypeGuard::check($message, 'string');
+    if (!$condition) {
+        throw new RuntimeException('Validation failed: ' . $message);
+    }
+}

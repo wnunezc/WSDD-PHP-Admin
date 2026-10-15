@@ -1,0 +1,90 @@
+#!/usr/bin/env php
+<?php 
+require dirname(__DIR__) . '/src/Support/bootstrap.php';
+use Wsdd\PhpAdmin\Operations\Operation;
+use Wsdd\PhpAdmin\Operations\OperationType;
+use Wsdd\PhpAdmin\Profile\ProfileLoadResult;
+use Wsdd\PhpAdmin\Support\CompatibilityPolicy;
+$root = dirname(__DIR__);
+$count = 0;
+foreach (['src', 'public', 'config', 'bin'] as $directory) {
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root . '/' . $directory, FilesystemIterator::SKIP_DOTS));
+    foreach ($files as $file) {
+        if (!$file->isFile() || !in_array($file->getExtension(), ['php', ''], true)) {
+            continue;
+        }
+        if (defined('TOKEN_PARSE')) {
+            token_get_all(file_get_contents($file->getPathname()), TOKEN_PARSE);
+        } else {
+            $lint = (new \Wsdd\PhpAdmin\Support\CommandRunner())->run([PHP_BINARY, '-n', '-l', $file->getPathname()]);
+            ensure($lint['exit_code'] === 0, 'PHP syntax failed: ' . $file->getPathname() . ' ' . $lint['stdout'] . $lint['stderr']);
+        }
+        $count++;
+    }
+}
+fwrite(STDOUT, "PASS {$count} PHP files parse on PHP " . PHP_VERSION . "\n");
+foreach ([['', ''], ['abc', ''], ['abc', 'a'], ['abc', 'bc'], ['abc', 'x'], ["a\x00b", "\x00"]] as list($text, $needle)) {
+    ensure(str_contains($text, $needle) === ($needle === '' || strpos($text, $needle) !== false), 'contains');
+    ensure(str_starts_with($text, $needle) === ($needle === '' || substr($text, 0, strlen($needle)) === $needle), 'starts-with');
+    ensure(str_ends_with($text, $needle) === ($needle === '' || substr($text, -strlen($needle)) === $needle), 'ends-with');
+}
+$operation = Operation::create(OperationType::ENABLE_EXTENSION, 'calendar', 'validation');
+ensure($operation->extension === 'calendar' && isset($operation->extension), 'Result properties remain readable');
+ensure($operation->toArray()['requested_by'] === 'validation', 'Result serialization preserves the API contract');
+foreach (['write', 'unset', 'unknown'] as $action) {
+    $blocked = false;
+    try {
+        if ($action === 'write') {
+            $operation->extension = 'bad';
+        } elseif ($action === 'unset') {
+            unset($operation->extension);
+        } else {
+            $operation->unknown = 'bad';
+        }
+    } catch (LogicException $exception) {
+        $blocked = true;
+    }
+    ensure($blocked && $operation->extension === 'calendar', 'External result mutation blocked: ' . $action);
+}
+ensure((new ProfileLoadResult('/unused', false, null, null))->toArray()['profile'] === null, 'Nullable result serialization');
+$policy = CompatibilityPolicy::load();
+$composer = \Wsdd\PhpAdmin\Support\JsonCodec::decode(file_get_contents($root . '/composer.json'), true, 512, 0);
+ensure($composer['require']['php'] === $policy['composer_requirement'], 'Composer policy agrees');
+ensure(version_compare(PHP_VERSION, $policy['runtime_minimum'], '>='), 'Runtime meets the declared minimum');
+$runner = new \Wsdd\PhpAdmin\Support\CommandRunner();
+$argument = 'literal; printf SHOULD_NOT_RUN; $(printf untouched)';
+$escaped = $runner->run([PHP_BINARY, '-r', 'echo $argv[1];', $argument]);
+ensure($escaped['exit_code'] === 0 && $escaped['stdout'] === $argument, 'Process arguments must remain literal');
+$previous = getenv('WSDD_PROCESS_TEST');
+putenv('WSDD_PROCESS_TEST=parent');
+try {
+    $environment = $runner->run([PHP_BINARY, '-r', 'echo getenv("WSDD_PROCESS_TEST"), ":", getenv("PATH") !== false ? "path" : "missing";'], 5, ['WSDD_PROCESS_TEST' => 'child']);
+    ensure($environment['exit_code'] === 0 && $environment['stdout'] === 'child:path' && getenv('WSDD_PROCESS_TEST') === 'parent', 'Child environment must inherit PATH and restore parent values');
+} finally {
+    putenv($previous === false ? 'WSDD_PROCESS_TEST' : 'WSDD_PROCESS_TEST=' . $previous);
+}
+ensure(\Wsdd\PhpAdmin\Support\JsonCodec::decode('null') === null, 'Valid JSON null must be distinguishable from an error');
+$invalidJson = false;
+try { \Wsdd\PhpAdmin\Support\JsonCodec::decode('{broken'); } catch (JsonException $error) { $invalidJson = true; }
+ensure($invalidJson, 'Invalid JSON must throw on every supported runtime');
+$wrongType = false;
+try { \Wsdd\PhpAdmin\Extensions\ExtensionName::isValid([]); } catch (Exception $error) { $wrongType = true; } catch (Throwable $error) { $wrongType = true; }
+ensure($wrongType, 'Scalar contracts must remain enforced');
+ensure(strlen(random_bytes(32)) === 32, 'Secure random byte count');
+$errorCode = 'require ' . var_export($root . '/src/Support/bootstrap.php', true) . '; $_GET["api"]="state"; \\Wsdd\\PhpAdmin\\Http\\HttpErrorHandler::render(new Exception("private fixture message")); if(http_response_code()!==503)exit(2);';
+$errorResult = $runner->run([PHP_BINARY, '-r', $errorCode]);
+ensure($errorResult['exit_code'] === 0 && strpos($errorResult['stdout'], 'Runtime temporarily unavailable') !== false && strpos($errorResult['stdout'], 'private fixture message') === false, 'HTTP errors must be 503 without exposing internals');
+fwrite(STDOUT, "PASS portable APIs, read-only results, process isolation, JSON, HTTP errors and compatibility policy\n");
+/**
+ * @param bool $condition
+ * @param string $message
+ * @return void
+ */
+function ensure($condition, $message)
+{
+    $condition = \Wsdd\PhpAdmin\Support\TypeGuard::check($condition, 'bool');
+    $message = \Wsdd\PhpAdmin\Support\TypeGuard::check($message, 'string');
+    if (!$condition) {
+        throw new RuntimeException($message);
+    }
+}

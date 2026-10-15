@@ -1,0 +1,143 @@
+#!/usr/bin/env php
+<?php 
+require dirname(__DIR__) . '/src/Support/bootstrap.php';
+use Wsdd\PhpAdmin\Extensions\BundledExtensionDiscovery;
+use Wsdd\PhpAdmin\Extensions\CatalogEnvironment;
+use Wsdd\PhpAdmin\Extensions\ExtensionCatalog;
+use Wsdd\PhpAdmin\Extensions\ExtensionInstaller;
+use Wsdd\PhpAdmin\Support\CommandRunner;
+use Wsdd\PhpAdmin\Support\AppConfig;
+use Wsdd\PhpAdmin\Ini\ManagedIniRepository;
+use Wsdd\PhpAdmin\Runtime\RuntimeDetector;
+use Wsdd\PhpAdmin\Profile\ProfileDocument;
+use Wsdd\PhpAdmin\Profile\ProfileLoadResult;
+use Wsdd\PhpAdmin\Reconciliation\ReadOnlyReconciler;
+use Wsdd\PhpAdmin\Support\CompatibilityPolicy;
+/**
+ * @param bool $condition
+ * @param string $message
+ * @return void
+ */
+function check($condition, $message)
+{
+    $condition = \Wsdd\PhpAdmin\Support\TypeGuard::check($condition, 'bool');
+    $message = \Wsdd\PhpAdmin\Support\TypeGuard::check($message, 'string');
+    if (!$condition) {
+        throw new RuntimeException($message);
+    }
+    fwrite(STDOUT, "PASS {$message}\n");
+}
+$tools = array_fill_keys(['docker-php-ext-install', 'docker-php-ext-enable', 'docker-php-ext-configure', 'apt-get', 'phpize', 'make', 'cc', 'apache2ctl'], true);
+$sources = ['extensions' => ['bcmath', 'bz2', 'calendar', 'gd', 'imap', 'opcache', 'pdo_pgsql', 'zip'], 'source' => 'fixture', 'error' => null];
+foreach (array_keys(CompatibilityPolicy::load()['targets']) as $version) {
+    if (!CompatibilityPolicy::hasRecipes($version)) {
+        continue;
+    }
+    $catalog = new ExtensionCatalog(new CatalogEnvironment($version, 'debian', $tools, $sources));
+    check($catalog->resolve('calendar')['php_version'] === $version && $catalog->isInstallable('calendar'), "Recipe selected for {$version}");
+    $status = $catalog->status(['Zend OPcache']);
+    check($status['opcache']['loaded'], "Zend OPcache alias is loaded for {$version}");
+    check($status['imap']['source_available'] && !$status['imap']['installable'], "Discovery cannot authorize a recipe for {$version}");
+    check(!$catalog->isInstallable('shmop'), "Absent build sources cannot be offered for {$version}");
+    check($catalog->entry('pdo_pgsql')['packages'] === ['libpq-dev'], "Explicit dependency recipe for {$version}");
+    $legacy = version_compare($version, '7.4', '<');
+    check($catalog->entry('zip')['packages'] === ($legacy ? ['zlib1g-dev'] : ['libzip-dev']), "Version-specific zip dependencies for {$version}");
+    check($catalog->entry('gd')['configure'] === ($legacy ? ['--with-freetype-dir=/usr', '--with-jpeg-dir=/usr'] : ['--with-freetype', '--with-jpeg']), "Version-specific GD configuration for {$version}");
+}
+foreach ([['8.5.0', 'debian'], ['8.0.0', 'debian'], ['5.5.0', 'debian'], ['8.4.26', 'alpine']] as list($version, $os)) {
+    $catalog = new ExtensionCatalog(new CatalogEnvironment($version, $os, $tools, $sources));
+    check(!$catalog->isInstallable('calendar'), "Unconfigured installation catalog blocked: {$version}/{$os}");
+}
+$missingTools = $tools;
+$missingTools['make'] = false;
+$catalog = new ExtensionCatalog(new CatalogEnvironment('8.4.26', 'debian', $missingTools, $sources));
+check(!$catalog->isInstallable('calendar') && str_contains($catalog->resolve('calendar')['reason'], 'make'), 'Missing build tool is blocked with a reason');
+$missingTools = $tools;
+$missingTools['apt-get'] = false;
+$catalog = new ExtensionCatalog(new CatalogEnvironment('8.4.26', 'debian', $missingTools, $sources));
+check($catalog->isInstallable('calendar') && !$catalog->isInstallable('pdo_pgsql'), 'Package manager required only for recipes with dependencies');
+$catalog = new ExtensionCatalog(new CatalogEnvironment('8.4.26', 'debian', $tools, ['extensions' => [], 'source' => 'unavailable', 'error' => 'Version mismatch']));
+check(!$catalog->isInstallable('calendar') && $catalog->resolve('calendar')['reason'] === 'Version mismatch', 'Unverified sources cannot authorize installation');
+check(!$catalog->isInstallable('../calendar'), 'Unsafe extension name is rejected');
+$root = sys_get_temp_dir() . '/wsdd-catalog-' . bin2hex(random_bytes(8));
+mkdir($root . '/main', 0775, true);
+mkdir($root . '/ext/calendar', 0775, true);
+file_put_contents($root . '/main/php_version.h', '#define PHP_VERSION "8.4.26"');
+file_put_contents($root . '/ext/calendar/config.m4', 'fixture');
+try {
+    $discovery = new BundledExtensionDiscovery($root, $root . '/absent.tar.xz');
+    check($discovery->discover('8.4.26')['extensions'] === ['calendar'], 'Source inventory discovered without modifying it');
+    check($discovery->discover('8.3.35')['error'] !== null, 'Mismatched source tree rejected');
+    mkdir($root . '/ini');
+    $ini = new ManagedIniRepository(new AppConfig(['paths' => ['managed_ini_dir' => $root . '/ini', 'managed_ini_prefix' => 'zz-wsdd-php-admin-']]));
+    $opcacheLoaded = in_array('Zend OPcache', get_loaded_extensions(), true);
+    check($ini->isExtensionLoadedByCurrentConfiguration('opcache') === $opcacheLoaded, 'Fresh observation recognizes the actual Zend OPcache state');
+    $opcacheIni = $ini->enableExtension('opcache');
+    $expectedOpcache = PHP_VERSION_ID < 70000 ? 'zend_extension=' . rtrim(ini_get('extension_dir'), '/') . '/opcache.so' : 'zend_extension=opcache';
+    check(trim(file_get_contents($opcacheIni)) === $expectedOpcache, 'OPcache activation uses a version-appropriate Zend directive in an isolated INI');
+    $runtime = (new RuntimeDetector())->detect();
+    $document = ProfileDocument::createEmpty($runtime)->withExtensionState('opcache', 'enabled', 'validation');
+    $report = (new ReadOnlyReconciler())->reconcile(new ProfileLoadResult($root . '/profile.json', true, $document, null), $runtime);
+    check($report->issueCount() === ($opcacheLoaded ? 0 : 1), 'Reconciliation reports actual OPcache presence or absence without false success');
+    $archiveRoot = $root . '/php-8.4.26';
+    mkdir($archiveRoot . '/ext/calendar', 0775, true);
+    file_put_contents($archiveRoot . '/ext/calendar/config.m4', 'fixture');
+    $archive = $root . '/php.tar.xz';
+    $runner = new CommandRunner();
+    check($runner->run(['tar', '-cJf', $archive, '-C', $root, 'php-8.4.26'])['exit_code'] === 0, 'Isolated source archive created');
+    $archiveDiscovery = new BundledExtensionDiscovery($root . '/absent', $archive);
+    check($archiveDiscovery->discover('8.4.26')['extensions'] === ['calendar'], 'Archive inventory reports the matching source definitions');
+    mkdir($archiveRoot . '/ext/bz2');
+    file_put_contents($archiveRoot . '/ext/bz2/config.m4', 'fixture');
+    check($runner->run(['tar', '-cJf', $archive, '-C', $root, 'php-8.4.26'])['exit_code'] === 0, 'Isolated source archive updated');
+    touch($archive, time() + 2);
+    check($archiveDiscovery->discover('8.4.26')['extensions'] === ['bz2', 'calendar'], 'Source archive change invalidates the inventory cache');
+} finally {
+    if (isset($archive) && is_file($archive)) {
+        unlink($archive);
+    }
+    if (isset($archiveRoot)) {
+        foreach (['bz2', 'calendar'] as $name) {
+            if (is_file($archiveRoot . '/ext/' . $name . '/config.m4')) {
+                unlink($archiveRoot . '/ext/' . $name . '/config.m4');
+            }
+            if (is_dir($archiveRoot . '/ext/' . $name)) {
+                rmdir($archiveRoot . '/ext/' . $name);
+            }
+        }
+        if (is_dir($archiveRoot . '/ext')) {
+            rmdir($archiveRoot . '/ext');
+        }
+        if (is_dir($archiveRoot)) {
+            rmdir($archiveRoot);
+        }
+    }
+    if (isset($opcacheIni) && is_file($opcacheIni)) {
+        unlink($opcacheIni);
+    }
+    if (is_dir($root . '/ini')) {
+        rmdir($root . '/ini');
+    }
+    unlink($root . '/main/php_version.h');
+    unlink($root . '/ext/calendar/config.m4');
+    rmdir($root . '/ext/calendar');
+    rmdir($root . '/ext');
+    rmdir($root . '/main');
+    rmdir($root);
+}
+$live = new ExtensionCatalog();
+$status = $live->status(get_loaded_extensions());
+check(isset($status['calendar']) && $status['calendar']['source_available'], 'Live image exposes matching calendar sources');
+check($status['calendar']['php_version'] === PHP_VERSION && $status['calendar']['distribution'] === 'debian', 'Live catalog identifies actual PHP and distribution');
+$recipes = array_filter($status, static function (array $entry) { return $entry['recipe_available']; });
+check(count($recipes) === 21 && array_filter($recipes, static function (array $entry) { return !$entry['source_available']; }) === [], 'All 21 reviewed recipes have build definitions in the actual PHP sources');
+check($status['mysqli']['loaded'], 'Live catalog identifies base mysqli as loaded');
+$result = (new ExtensionInstaller($live))->install('mysqli');
+check($result['status'] === 'skipped' && str_contains($result['message'], 'already installed'), 'Installer does not recompile or adopt an installed base extension');
+$runner = new CommandRunner();
+$largeOutput = $runner->run([PHP_BINARY, '-r', 'fwrite(STDERR, str_repeat("e", 131072)); fwrite(STDOUT, str_repeat("o", 131072));']);
+check($largeOutput['exit_code'] === 0 && strlen($largeOutput['stderr']) === 131072 && strlen($largeOutput['stdout']) === 131072, 'Installer command runner drains stdout and stderr without deadlock');
+$timeout = $runner->run([PHP_BINARY, '-r', 'usleep(500000);'], 0.05);
+check($timeout['exit_code'] === 124, 'Command timeout is reported as failure');
+$composer = \Wsdd\PhpAdmin\Support\JsonCodec::decode(file_get_contents(dirname(__DIR__) . '/composer.json'), true, 512, 0);
+check($composer['require']['php'] === CompatibilityPolicy::load()['composer_requirement'], 'Composer and compatibility policy agree on the runtime constraint');

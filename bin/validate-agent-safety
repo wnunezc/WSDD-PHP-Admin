@@ -1,0 +1,96 @@
+#!/usr/bin/env php
+<?php 
+require dirname(__DIR__) . '/src/Support/bootstrap.php';
+use Wsdd\PhpAdmin\Agent\AgentLogger;
+use Wsdd\PhpAdmin\Agent\AgentRunner;
+use Wsdd\PhpAdmin\Agent\OperationProcessor;
+use Wsdd\PhpAdmin\Audit\AuditLogger;
+use Wsdd\PhpAdmin\Ini\ManagedIniRepository;
+use Wsdd\PhpAdmin\Extensions\ExtensionCatalog;
+use Wsdd\PhpAdmin\Extensions\ExtensionInstaller;
+use Wsdd\PhpAdmin\Operations\OperationRepository;
+use Wsdd\PhpAdmin\Operations\OperationService;
+use Wsdd\PhpAdmin\Operations\OperationType;
+use Wsdd\PhpAdmin\Profile\ProfileRepository;
+use Wsdd\PhpAdmin\Profile\ProfileStateRecorder;
+use Wsdd\PhpAdmin\Recovery\IniBackupRepository;
+use Wsdd\PhpAdmin\Reconciliation\ManagedReconciler;
+use Wsdd\PhpAdmin\Runtime\RuntimeDetector;
+use Wsdd\PhpAdmin\Service\ServiceReloader;
+use Wsdd\PhpAdmin\Support\AppConfig;
+$root = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'wsdd-php-admin-agent-' . bin2hex(random_bytes(4));
+$profile = $root . DIRECTORY_SEPARATOR . 'profile';
+$ini = $root . DIRECTORY_SEPARATOR . 'ini';
+$logs = $root . DIRECTORY_SEPARATOR . 'logs';
+foreach ([$profile, $ini, $logs] as $directory) {
+    if (!mkdir($directory, 0775, true) && !is_dir($directory)) {
+        throw new RuntimeException(sprintf('Unable to create "%s".', $directory));
+    }
+}
+putenv('WSDD_PHP_ADMIN_PROFILE_DIR=' . $profile);
+putenv('WSDD_PHP_ADMIN_INI_DIR=' . $ini);
+putenv('WSDD_PHP_ADMIN_LOG_DIR=' . $logs);
+putenv('WSDD_PHP_ADMIN_AGENT_LOG=' . $logs . DIRECTORY_SEPARATOR . 'agent.log');
+$config = AppConfig::loadDefault();
+$repository = new OperationRepository($config);
+$service = new OperationService($repository);
+$profiles = new ProfileRepository($config);
+$managedIni = new ManagedIniRepository($config);
+$reloader = new ServiceReloader();
+$extensionInstaller = new ExtensionInstaller(new ExtensionCatalog());
+$managedReconciler = new ManagedReconciler($profiles, $managedIni, $reloader, $extensionInstaller);
+$safe = $service->create(OperationType::ENABLE_EXTENSION, 'date', 'validation');
+assertTrue(is_file($repository->operationPath($safe->id)), 'safe enable_extension operation is created');
+assertThrows(static function () use ($service) { return $service->create(OperationType::ENABLE_EXTENSION, '../bad', 'validation'); }, 'unsafe extension is rejected');
+assertThrows(static function () use ($repository) { return $repository->operationPath('../bad'); }, 'path traversal operation id is rejected');
+$prefixed = $ini . DIRECTORY_SEPARATOR . 'zz-wsdd-php-admin-curl.ini';
+$foreign = $ini . DIRECTORY_SEPARATOR . 'curl.ini';
+file_put_contents($prefixed, "extension=curl\n");
+file_put_contents($foreign, "extension=curl\n");
+$disable = $service->create(OperationType::DISABLE_EXTENSION, 'curl', 'validation');
+$runner = new AgentRunner($repository, new OperationProcessor($managedIni, $profiles, $reloader, new ProfileStateRecorder($profiles, new RuntimeDetector()), $managedReconciler, $extensionInstaller, new IniBackupRepository($config, $managedIni), new AuditLogger($config)), new AgentLogger($config), $managedReconciler);
+$runner->runOnce();
+assertTrue(is_file($repository->resultPath($disable->id)), 'agent:once writes result.json');
+assertTrue(!is_file($prefixed), 'disable_extension removes only the managed prefixed INI');
+assertTrue(is_file($foreign), 'disable_extension leaves non-prefixed INI untouched');
+$profileData = json_decode((string) file_get_contents($config->profilePath()), true);
+assertTrue((isset($profileData['extensions']['curl']['desired_state']) ? $profileData['extensions']['curl']['desired_state'] : null) === 'disabled', 'successful managed operation records desired state in profile');
+$loaded = $service->create(OperationType::ENABLE_EXTENSION, 'date', 'validation');
+$runner->runOnce();
+$loadedResult = json_decode((string) file_get_contents($repository->resultPath($loaded->id)), true);
+assertTrue((isset($loadedResult['status']) ? $loadedResult['status'] : null) === 'skipped', 'enable_extension skips already loaded extension without managed INI');
+assertTrue(!is_file($ini . DIRECTORY_SEPARATOR . 'zz-wsdd-php-admin-date.ini'), 'already loaded extension does not create duplicate managed INI');
+$missingManaged = $service->create(OperationType::DISABLE_EXTENSION, 'date', 'validation');
+$runner->runOnce();
+$missingManagedResult = json_decode((string) file_get_contents($repository->resultPath($missingManaged->id)), true);
+assertTrue((isset($missingManagedResult['status']) ? $missingManagedResult['status'] : null) === 'skipped', 'disable_extension skips when no managed INI exists');
+fwrite(STDOUT, "Agent safety validation passed.\n");
+/**
+ * @param bool $condition
+ * @param string $message
+ * @return void
+ */
+function assertTrue($condition, $message)
+{
+    $condition = \Wsdd\PhpAdmin\Support\TypeGuard::check($condition, 'bool');
+    $message = \Wsdd\PhpAdmin\Support\TypeGuard::check($message, 'string');
+    if (!$condition) {
+        throw new RuntimeException('Validation failed: ' . $message);
+    }
+}
+/**
+ * @param string $message
+ * @return void
+ */
+function assertThrows(callable $callback, $message)
+{
+    $message = \Wsdd\PhpAdmin\Support\TypeGuard::check($message, 'string');
+    try {
+        $callback();
+    } catch (\Exception $exception) {
+        return;
+    } catch (Throwable $exception) {
+        return;
+    }
+    throw new RuntimeException('Validation failed: ' . $message);
+}
